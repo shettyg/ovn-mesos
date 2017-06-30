@@ -1,0 +1,322 @@
+#! /usr/bin/python
+
+import argparse
+import ast
+import json
+import netaddr
+import os
+import sys
+import subprocess
+import shlex
+
+import ovs.vlog
+import pyroute2
+
+vlog = ovs.vlog.Vlog("ovn-mesos-plugin")
+
+LOGFILE = "/var/log/openvswitch/ovn-mesos-plugin.log"
+CNI_VERSION = "0.2.0"
+DEBUG = True
+OVN_NB = ""
+MTU = 1400
+PRIVATE_KEY = "/etc/openvswitch/ovncontroller-privkey.pem",
+CERTIFICATE = "/etc/openvswitch/ovncontroller-cert.pem",
+CA_CERT = "/etc/openvswitch/ovnnb-ca.cert",
+
+
+class OVNCNIException(Exception):
+
+    def __init__(self, code, message, details=None):
+        super(OVNCNIException, self).__init__("%s - %s" % (code, message))
+        self._code = code
+        self._msg = message
+        self._details = details
+
+    def cni_error(self):
+        error_data = {'cniVersion': CNI_VERSION,
+                      'code': self._code,
+                      'message': self._msg}
+        if self._details:
+            error_data['details'] = self._details
+        return json.dumps(error_data)
+
+
+def call_popen(cmd):
+    child = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    output = child.communicate()
+    if child.returncode:
+        raise RuntimeError("Fatal error executing %s" % (cmd))
+    if len(output) == 0 or output[0] is None:
+        output = ""
+    else:
+        output = output[0].decode("utf8").strip()
+    return output
+
+
+def call_prog(prog, args_list):
+    cmd = [prog, "--timeout=5", "-vconsole:off"] + args_list
+    return call_popen(cmd)
+
+
+def ovs_vsctl(*args):
+    return call_prog("ovs-vsctl", list(args))
+
+
+def ovn_nbctl(*args):
+    args_list = list(args)
+    if OVN_NB.startswith("ssl"):
+        private_key = "%s=%s" % ("--private-key", PRIVATE_KEY)
+        args_list.insert(0, private_key)
+        certificate = "%s=%s" % ("--certificate", CERTIFICATE)
+        args_list.insert(0, certificate)
+        cacert = "%s=%s" % ("--bootstrap-ca-cert", CA_CERT)
+        args_list.insert(0, cacert)
+    database_option = "%s=%s" % ("--db", OVN_NB)
+    args_list.insert(0, database_option)
+    return call_prog("ovn-nbctl", args_list)
+
+
+def fetch_ovn_nb():
+    global OVN_NB
+    OVN_NB = ovs_vsctl("--if-exists", "get", "Open_vSwitch", ".",
+                       "external_ids:ovn-nb").strip('"')
+    if not OVN_NB:
+        raise OVNCNIException(100, "OVN central database's ip address not set")
+
+    if OVN_NB.startswith("ssl"):
+        if not os.path.isfile(PRIVATE_KEY):
+            raise OVNCNIException(100,
+                                  "No private key %s found" % (PRIVATE_KEY))
+
+        if not os.path.isfile(CERTIFICATE):
+            raise OVNCNIException(100,
+                                  "No certificate %s found" % (CERTIFICATE))
+
+        # We allow bootstrapping to get the CA_CERT.
+        if not os.path.isfile(CA_CERT):
+            # Bootstrap it with a simple transaction.
+            try:
+                vlog.dbg("No CA certificate found. Attempting "
+                         "bootstrapping...")
+                ovn_nbctl("list", "logical_switch")
+            except Exception:
+                # exception is expected. But did we bootstrap?
+                if not os.path.isfile(CA_CERT):
+                    raise OVNCNIException(100, "Bootstapping OVN NB's "
+                                          "certificate failed")
+                vlog.dbg("Bootstrapping successful. Continuing...")
+
+
+def setup_interface(container_id, cni_netns, cni_ifname,
+                    mac_address, ip_address, gateway_ip):
+    try:
+        if not os.path.exists("/var/run/netns"):
+            os.makedirs("/var/run/netns")
+    except Exception as e:
+        vlog.warn("failed to create netns directory" % str(e))
+        raise OVNCNIException(100, "failure in creation of netns directory")
+
+    try:
+        ipdb = pyroute2.IPDB(mode='explicit')
+        vlog.dbg("Creating veth pair for container %s" % container_id)
+        veth_outside = container_id[:15]
+        veth_inside = container_id[:13] + "_c"
+        ipdb.create(ifname=veth_outside, kind='veth', peer=veth_inside)
+        with ipdb.interfaces[veth_outside] as veth_outside_iface:
+            # Up the outer interface
+            vlog.dbg("Bringing up veth outer interface %s" % veth_outside)
+            veth_outside_iface.up()
+            veth_outside_idx = veth_outside_iface.index
+
+        # Create a link for the container namespace
+        # This is necessary also when using pyroute2
+        # See https://github.com/svinota/pyroute2/issues/290
+        vlog.dbg("Create a link for container namespace")
+        netns_dst = "/var/run/netns/%s" % container_id
+        if not os.path.isfile(netns_dst):
+            command = "ln -s %s %s" % (cni_netns, netns_dst)
+            call_popen(shlex.split(command))
+
+        with ipdb.interfaces[veth_inside] as veth_inside_iface:
+            # Move the inner veth inside the container namespace
+            vlog.dbg("Adding veth inner interface to namespace for "
+                     "container %s" % container_id)
+            veth_inside_iface.net_ns_fd = container_id
+
+    except Exception as e:
+        vlog.warn("failed to create veth pairs")
+        raise OVNCNIException(100, "veth pair setup failure")
+
+    try:
+        # Change the name of veth_inside to $cni_ifname
+        ns_ipdb = pyroute2.IPDB(nl=pyroute2.NetNS(container_id),
+                                mode='explicit')
+        # Configure veth_inside: set name, mtu, mac address, ip, and bring up
+        vlog.dbg("Configuring and bringing up veth inner interface %s. "
+                 "New name:'%s',MAC address:'%s', MTU:'%s', IP:%s" %
+                 (veth_inside, cni_ifname, mac_address,
+                  MTU, ip_address))
+        with ns_ipdb.interfaces[veth_inside] as veth_inside_iface:
+            veth_inside_iface.ifname = cni_ifname
+            veth_inside_iface.address = mac_address
+            veth_inside_iface.mtu = MTU
+            veth_inside_iface.add_ip(ip_address)
+            veth_inside_iface.up()
+
+        # Set the gateway
+        vlog.dbg("Setting gateway_ip %s for container:%s"
+                 % (gateway_ip, container_id))
+        ns_ipdb.routes.add(dst='default', gateway=gateway_ip).commit()
+
+        return veth_outside
+    except Exception as e:
+        vlog.warn("Failed to setup veth pair for pod: %s" % str(e))
+        if veth_outside_idx:
+            pyroute2.IPRoute().link('del', index=veth_outside_idx)
+        raise OVNCNIException(100, "container interface setup failure")
+
+
+def get_logical_information(mesos_config):
+    logical_switch = ""
+    logical_port = ""
+    try:
+        network = mesos_config['args']['org.apache.mesos']['network_info']
+        labels = network['labels']['labels']
+        for label in labels:
+            if label['key'] == 'logical_switch':
+                logical_switch = label['value']
+            if label['key'] == 'task_id':
+                logical_port = "%s_%s" % (logical_switch, label['value'])
+    except Exception as e:
+        vlog.err("Failed to get network info from mesos config (%s)" % str(e))
+        raise OVNCNIException(100, "Failed to get network from mesos config")
+
+    if not logical_switch:
+        vlog.err("Failed to get logical_switch from mesos config")
+        raise OVNCNIException(100, "Failed to get logical_switch from "
+                              "mesos config")
+
+    if not logical_port:
+        vlog.err("Failed to build logical_port name from mesos config")
+        raise OVNCNIException(100, "Failed to build logical_port name from "
+                              "mesos config")
+
+    return (logical_switch, logical_port)
+
+
+def cni_add(cni_ifname, cni_netns, container_id, mesos_config):
+    (logical_switch, logical_port) = get_logical_information(mesos_config)
+
+    try:
+        subnet = ovn_nbctl("--if-exists", "get", "logical_switch",
+                           logical_switch,
+                           "other_config:subnet").strip('"')
+    except Exception as e:
+        vlog.err("failed to get subnet %s" % (str(e)))
+        raise OVNCNIException(100, "Failed to get subnet")
+
+    try:
+        ip = netaddr.IPNetwork(subnet)
+        ip.value = ip.value + 1
+        gateway_ip = str(ip.ip)
+        mask = str(ip.prefixlen)
+    except Exception as e:
+        vlog.err("failed to create gateway_ip from %s" % (subnet))
+        raise OVNCNIException(100, "Failed to create gateway_ip from subnet")
+
+    try:
+        ovn_nbctl("--wait=sb", "--", "--may-exist", "lsp-add",
+                  logical_switch, logical_port, "--", "lsp-set-addresses",
+                  logical_port, "dynamic")
+    except Exception as e:
+        vlog.err("lsp-add (%s)" % (str(e)))
+        raise OVNCNIException(100, "failed to create logical_port")
+
+    try:
+        ret = ovn_nbctl("get", "logical_switch_port", logical_port,
+                        "dynamic_addresses")
+        addresses = ast.literal_eval(ret)
+    except Exception as e:
+        vlog.err("dynamic_addresses (%s)" % (str(e)))
+        raise OVNCNIException(100, "failed to get dynamic_addresses")
+
+    if not len(addresses):
+        vlog.err("failed to get dynamic address")
+        raise OVNCNIException(100, "failed to get dynamic_addresses")
+
+    (mac_address, ip_address) = addresses.split()
+    ip_address_mask = "%s/%s" % (ip_address, mask)
+
+    veth_outside = setup_interface(container_id, cni_netns, cni_ifname,
+                                   mac_address, ip_address_mask,
+                                   gateway_ip)
+
+    iface_id = logical_port
+
+    try:
+        ovs_vsctl('add-port', 'br-int', veth_outside, '--', 'set',
+                  'interface', veth_outside,
+                  'external_ids:attached_mac=%s' % mac_address,
+                  'external_ids:iface-id=%s' % iface_id,
+                  'external_ids:ip_address=%s' % ip_address)
+    except Exception:
+        vlog.err("Unable to plug interface into OVN bridge")
+        raise OVNCNIException(106, "failure in plugging pod interface")
+
+    output = json.dumps({'ip_address': ip_address_mask,
+                        'gateway_ip': gateway_ip, 'mac_address': mac_address})
+    vlog.dbg("output is %s" % output)
+    print(output)
+
+
+def cni_del(container_id, mesos_config):
+    (logical_switch, logical_port) = get_logical_information(mesos_config)
+
+    try:
+        ovs_vsctl("del-port", container_id[:15])
+    except Exception:
+        message = "failed to delete OVS port %s" % container_id[:15]
+        vlog.err(message)
+
+    try:
+        ovn_nbctl("lsp-del", logical_port)
+    except Exception:
+        message = "failed to delete logical switch port %s in %s" \
+                    % (logical_port, logical_switch)
+        vlog.err(message)
+
+    command = "rm -f /var/run/netns/%s" % container_id
+    call_popen(shlex.split(command))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    ovs.vlog.add_args(parser)
+
+    if DEBUG:
+        args = parser.parse_args(['--log-file', LOGFILE, '-vfile:dbg'])
+    else:
+        args = parser.parse_args(['--log-file', LOGFILE])
+    ovs.vlog.handle_args(args)
+
+    fetch_ovn_nb()
+
+    raw_config = ''.join(sys.stdin.readlines())
+    config = json.loads(raw_config.replace('\n', '').replace('\t', ''))
+
+    vlog.dbg("plugin invoked with %s and config: %s"
+             % (os.environ['CNI_COMMAND'], config))
+
+    if os.environ['CNI_COMMAND'] == "ADD":
+        cni_ifname = os.environ['CNI_IFNAME']
+        cni_netns = os.environ['CNI_NETNS']
+        container_id = os.environ['CNI_CONTAINERID']
+        vlog.dbg("ifname=%s, netns=%s, container_id=%s"
+                 % (cni_ifname, cni_netns, container_id))
+        cni_add(cni_ifname, cni_netns, container_id, config)
+    elif os.environ['CNI_COMMAND'] == "DEL":
+        cni_del(os.environ['CNI_CONTAINERID'], config)
+
+
+if __name__ == '__main__':
+    main()
