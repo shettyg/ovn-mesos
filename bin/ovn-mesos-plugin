@@ -119,7 +119,7 @@ def setup_interface(container_id, cni_netns, cni_ifname,
     try:
         ipdb = pyroute2.IPDB(mode='explicit')
         vlog.dbg("Creating veth pair for container %s" % container_id)
-        veth_outside = container_id[:15]
+        veth_outside = container_id[:13] + "_l"
         veth_inside = container_id[:13] + "_c"
         ipdb.create(ifname=veth_outside, kind='veth', peer=veth_inside)
         with ipdb.interfaces[veth_outside] as veth_outside_iface:
@@ -176,17 +176,14 @@ def setup_interface(container_id, cni_netns, cni_ifname,
         raise OVNCNIException(100, "container interface setup failure")
 
 
-def get_logical_information(mesos_config):
+def get_logical_switch(mesos_config):
     logical_switch = ""
-    logical_port = ""
     try:
         network = mesos_config['args']['org.apache.mesos']['network_info']
         labels = network['labels']['labels']
         for label in labels:
             if label['key'] == 'logical_switch':
                 logical_switch = label['value']
-            if label['key'] == 'task_id':
-                logical_port = "%s_%s" % (logical_switch, label['value'])
     except Exception as e:
         vlog.err("Failed to get network info from mesos config (%s)" % str(e))
         raise OVNCNIException(100, "Failed to get network from mesos config")
@@ -196,16 +193,12 @@ def get_logical_information(mesos_config):
         raise OVNCNIException(100, "Failed to get logical_switch from "
                               "mesos config")
 
-    if not logical_port:
-        vlog.err("Failed to build logical_port name from mesos config")
-        raise OVNCNIException(100, "Failed to build logical_port name from "
-                              "mesos config")
-
-    return (logical_switch, logical_port)
+    return logical_switch
 
 
 def cni_add(cni_ifname, cni_netns, container_id, mesos_config):
-    (logical_switch, logical_port) = get_logical_information(mesos_config)
+    logical_switch = get_logical_switch(mesos_config)
+    logical_port = "%s_%s" % (cni_ifname, container_id)
 
     try:
         subnet = ovn_nbctl("--if-exists", "get", "logical_switch",
@@ -269,11 +262,13 @@ def cni_add(cni_ifname, cni_netns, container_id, mesos_config):
     print(output)
 
 
-def cni_del(container_id, mesos_config):
-    (logical_switch, logical_port) = get_logical_information(mesos_config)
+def cni_del(cni_ifname, container_id, mesos_config):
+    logical_switch = get_logical_switch(mesos_config)
+    logical_port = "%s_%s" % (cni_ifname, container_id)
 
+    port = "%s_l" % container_id[:13]
     try:
-        ovs_vsctl("del-port", container_id[:15])
+        ovs_vsctl("del-port", port)
     except Exception:
         message = "failed to delete OVS port %s" % container_id[:15]
         vlog.err(message)
@@ -315,7 +310,12 @@ def main():
                  % (cni_ifname, cni_netns, container_id))
         cni_add(cni_ifname, cni_netns, container_id, config)
     elif os.environ['CNI_COMMAND'] == "DEL":
-        cni_del(os.environ['CNI_CONTAINERID'], config)
+        cni_ifname = os.environ['CNI_IFNAME']
+        cni_netns = os.environ['CNI_NETNS']
+        container_id = os.environ['CNI_CONTAINERID']
+        vlog.dbg("ifname=%s, netns=%s, container_id=%s"
+                 % (cni_ifname, cni_netns, container_id))
+        cni_del(cni_ifname, container_id, config)
 
 
 if __name__ == '__main__':
