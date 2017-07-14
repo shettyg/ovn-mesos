@@ -1,0 +1,395 @@
+#! /usr/bin/python
+# Copyright (C) 2016 Nicira, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at:
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import argparse
+import netaddr
+import os
+import random
+import shlex
+import subprocess
+import sys
+import traceback
+
+PRIVATE_KEY = "/etc/openvswitch/ovncontroller-privkey.pem",
+CERTIFICATE = "/etc/openvswitch/ovncontroller-cert.pem",
+CA_CERT = "/etc/openvswitch/ovnnb-ca.cert",
+OVN_NB = ""
+
+
+def call_popen(cmd):
+    child = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    output = child.communicate()
+    if child.returncode:
+        raise RuntimeError("Fatal error executing %s" % (cmd))
+    if len(output) == 0 or output[0] is None:
+        output = ""
+    else:
+        output = output[0].decode("utf8").strip()
+    return output
+
+
+def call_prog(prog, args_list):
+    cmd = [prog, "--timeout=5", "-vconsole:off"] + args_list
+    return call_popen(cmd)
+
+
+def ovs_vsctl(*args):
+    return call_prog("ovs-vsctl", list(args))
+
+
+def ovn_nbctl(*args):
+    args_list = list(args)
+    if OVN_NB.startswith("ssl"):
+        private_key = "%s=%s" % ("--private-key", PRIVATE_KEY)
+        args_list.insert(0, private_key)
+        certificate = "%s=%s" % ("--certificate", CERTIFICATE)
+        args_list.insert(0, certificate)
+        cacert = "%s=%s" % ("--bootstrap-ca-cert", CA_CERT)
+        args_list.insert(0, cacert)
+    database_option = "%s=%s" % ("--db", OVN_NB)
+    args_list.insert(0, database_option)
+    return call_prog("ovn-nbctl", args_list)
+
+
+def fetch_ovn_nb():
+    global OVN_NB
+    OVN_NB = ovs_vsctl("--if-exists", "get", "Open_vSwitch", ".",
+                       "external_ids:ovn-nb").strip('"')
+    if not OVN_NB:
+        raise Exception("OVN central database's ip address not set")
+
+    if OVN_NB.startswith("ssl"):
+        if not os.path.isfile(PRIVATE_KEY):
+            raise Exception("No private key %s found" % (PRIVATE_KEY))
+
+        if not os.path.isfile(CERTIFICATE):
+            raise Exception("No certificate %s found" % (CERTIFICATE))
+
+        # We allow bootstrapping to get the CA_CERT.
+        if not os.path.isfile(CA_CERT):
+            # Bootstrap it with a simple transaction.
+            try:
+                ovn_nbctl("list", "logical_switch")
+            except Exception:
+                # exception is expected. But did we bootstrap?
+                if not os.path.isfile(CA_CERT):
+                    raise Exception("Bootstapping OVN NB's "
+                                    "certificate failed")
+
+
+def get_local_system_id():
+    system_id = ovs_vsctl("--if-exists", "get", "Open_vSwitch", ".",
+                          "external_ids:system-id").strip('"')
+    if not system_id:
+        raise Exception("no system-id configured in the local host")
+
+    return system_id
+
+
+def generate_mac(prefix="00:00:00"):
+    random.seed()
+    mac = "%s:%02X:%02X:%02X" % (
+        prefix,
+        random.randint(0, 255),
+        random.randint(0, 255),
+        random.randint(0, 255))
+    return mac
+
+
+def tenant_init(args):
+    fetch_ovn_nb()
+
+    if not args.tenant_name:
+        raise Exception("Arguments should be non-null")
+
+    tenant_name = args.tenant_name
+
+    # Create a single common distributed router for the tenant.
+    ovn_nbctl("--", "--may-exist", "lr-add", tenant_name)
+
+    join_switch = "join_%s" % tenant_name
+
+    # Create a logical switch called "join" that will be used to connect
+    # gateway routers to the distributed router. The "join" will be
+    # allocated IP addresses in the range 100.64.1.0/24
+    ovn_nbctl("--may-exist", "ls-add", join_switch)
+
+    # Connect the distributed router to "join"
+    router_mac = ovn_nbctl("--if-exist", "get", "logical_router_port",
+                           "rtoj-" + tenant_name, "mac").strip('"')
+    if not router_mac:
+        router_mac = generate_mac()
+        ovn_nbctl("--", "--may-exist", "lrp-add", tenant_name,
+                  "rtoj-" + tenant_name, router_mac, "100.64.1.1/24",
+                  "--", "set", "logical_router_port", "rtoj-" + tenant_name,
+                  "external_ids:connect_to_join=yes")
+
+    # Connect the switch "join" to the router.
+    ovn_nbctl("--", "--may-exist", "lsp-add", join_switch,
+              "jtor-" + tenant_name, "--", "set", "logical_switch_port",
+              "jtor-" + tenant_name, "type=router",
+              "options:router-port=rtoj-" + tenant_name,
+              "addresses=" + "\"" + router_mac + "\"")
+
+
+def generate_gateway_ip():
+    # All the routers connected to "join" switch are in 100.64.1.0/24
+    # network and they have their external_ids:connect_to_join set.
+    ips = ovn_nbctl("--data=bare", "--no-heading", "--columns=network",
+                    "find", "logical_router_port",
+                    "external_ids:connect_to_join=yes").split()
+
+    ip_start = netaddr.IPNetwork("100.64.1.0/24")
+    ip_max = netaddr.IPNetwork("100.64.1.255/24")
+
+    while ip_start.value != ip_max.value:
+        ip_start.value = ip_start.value + 1
+        if str(ip_start) not in ips:
+            return str(ip_start)
+
+    raise Exception("Ran out of IPs for gateway routers")
+
+
+def gateway_init(args):
+    if not args.tenant_name or not args.cluster_ip_subnet \
+       or not args.physical_ip:
+        raise Exception("Arguments should be non-null")
+
+    # We want either of args.physical_interface or args.bridge_interface
+    # provided. But not both. (XOR)
+    if not args.physical_interface:
+        raise Exception("physical-interface has to be specified")
+
+    physical_ip = netaddr.IPNetwork(args.physical_ip)
+    if args.default_gw:
+        default_gw = netaddr.IPNetwork(args.default_gw)
+
+    fetch_ovn_nb()
+
+    tenant_name = args.tenant_name
+
+    tenant_cluster_router = tenant_name
+
+    system_id = get_local_system_id()
+
+    # Find if gateway routers have been created before.
+    first_gateway = "no"
+    physical_gateways = ovn_nbctl(
+                                "--data=bare", "--no-heading",
+                                "--columns=_uuid", "find",
+                                "logical_router",
+                                "options:chassis!=null").split()
+    if not physical_gateways:
+        first_gateway = "yes"
+
+    # Create a gateway router.
+    gateway_router = "GR_%s_%s" % (tenant_name, system_id)
+    ovn_nbctl("--", "--may-exist", "lr-add", gateway_router, "--", "set",
+              "logical_router", gateway_router, "options:chassis=" + system_id,
+              "external_ids:physical_ip=" + str(physical_ip.ip),
+              "external_ids:first_gateway=" + first_gateway)
+
+    join_switch = "join_%s" % tenant_name
+
+    # Connect gateway router to switch "join".
+    router_ip = None
+    router_mac = ovn_nbctl("--if-exist", "get", "logical_router_port",
+                           "rtoj-" + gateway_router, "mac").strip('"')
+    if not router_mac:
+        router_mac = generate_mac()
+        router_ip = generate_gateway_ip()
+        ovn_nbctl("--", "--may-exist", "lrp-add", gateway_router,
+                  "rtoj-" + gateway_router, router_mac, router_ip,
+                  "--", "set", "logical_router_port", "rtoj-" + gateway_router,
+                  "external_ids:connect_to_join=yes")
+
+    # Connect the switch "join" to the router.
+    ovn_nbctl("--", "--may-exist", "lsp-add", join_switch,
+              "jtor-" + gateway_router, "--", "set", "logical_switch_port",
+              "jtor-" + gateway_router, "type=router",
+              "options:router-port=rtoj-" + gateway_router,
+              "addresses=" + "\"" + router_mac + "\"")
+
+    # Add a static route in GR with distributed router as the nexthop.
+    ovn_nbctl("--may-exist", "lr-route-add", gateway_router,
+              args.cluster_ip_subnet, "100.64.1.1")
+
+    # Add a default route in distributed router with first GR as the nexthop.
+    ovn_nbctl("--may-exist", "lr-route-add", tenant_cluster_router,
+              "0.0.0.0/0", "100.64.1.2")
+
+    # Create the external switch for the physical interface to connect to.
+    external_switch = "ext_%s" % (system_id)
+    ovn_nbctl("--may-exist", "ls-add", external_switch)
+
+    if args.physical_interface:
+        # Connect physical interface to br-int. Get its mac address
+        iface_id = "%s_%s" % (args.physical_interface, system_id)
+        ovs_vsctl("--", "--may-exist", "add-port", "br-int",
+                  args.physical_interface, "--", "set", "interface",
+                  args.physical_interface, "external-ids:iface-id=" + iface_id)
+
+        mac_address = ovs_vsctl("--if-exists", "get", "interface",
+                                args.physical_interface,
+                                "mac_in_use").strip('"')
+
+        # Flush the IP address of the physical interface.
+        command = "ip addr flush dev %s" % (args.physical_interface)
+        call_popen(shlex.split(command))
+
+    # Add external interface as a logical port to external_switch. This is
+    # a learning switch port with "unknown" address.  The external world
+    # is accessed via this port.
+    ovn_nbctl("--", "--may-exist", "lsp-add", external_switch,
+              iface_id, "--", "lsp-set-addresses",
+              iface_id, "unknown")
+
+    # Connect GR to external_switch with mac address of external interface
+    # and that IP address.
+    ovn_nbctl("--", "--may-exist", "lrp-add", gateway_router,
+              "rtoe-" + gateway_router, mac_address, str(physical_ip),
+              "--", "set", "logical_router_port", "rtoe-" + gateway_router,
+              "external-ids:gateway-physical-ip=yes")
+
+    # Add a static route in GR with physical gateway as the default next hop.
+    if args.default_gw:
+        ovn_nbctl("--may-exist", "lr-route-add", gateway_router,
+                  "0.0.0.0/0", str(default_gw.ip), "rtoe-" + gateway_router)
+
+    # Connect the external_switch to the router.
+    ovn_nbctl("--", "--may-exist", "lsp-add", external_switch,
+              "etor-" + gateway_router, "--", "set", "logical_switch_port",
+              "etor-" + gateway_router, "type=router",
+              "options:router-port=rtoe-" + gateway_router,
+              "addresses=" + "\"" + mac_address + "\"")
+
+    # Default SNAT rules.
+    ovn_nbctl("--", "--id=@nat", "create", "nat", "type=snat",
+              "logical_ip=" + args.cluster_ip_subnet,
+              "external_ip=" + str(physical_ip.ip),
+              "--", "add", "logical_router", gateway_router, "nat", "@nat")
+
+
+def network_init(args):
+    if not args.network_name or not args.subnet \
+      or not args.tenant_name:
+        raise Exception("Arguments should be non-null")
+
+    cluster_router = args.tenant_name
+
+    fetch_ovn_nb()
+
+    # Create a router port and provide it the first address in the
+    # 'subnet'.
+    ip = netaddr.IPNetwork(args.subnet)
+    ip.value = ip.value + 1
+    router_ip_mask = str(ip)
+
+    router_port_name = "rtos-%s-%s" % (args.tenant_name, args.network_name)
+    switch_port_name = "stor-%s-%s" % (args.network_name, args.tenant_name)
+    router_mac = ovn_nbctl("--if-exist", "get", "logical_router_port",
+                           router_port_name, "mac").strip('"')
+    if not router_mac:
+        router_mac = generate_mac()
+        ovn_nbctl("--may-exist", "lrp-add", cluster_router,
+                  router_port_name, router_mac, router_ip_mask)
+
+    # Create a logical switch and set its subnet.
+    ovn_nbctl("--", "--may-exist", "ls-add", args.network_name,
+              "--", "set", "logical_switch", args.network_name,
+              "other-config:subnet=" + args.subnet)
+
+    # Connect the switch to the router.
+    ovn_nbctl("--", "--may-exist", "lsp-add", args.network_name,
+              switch_port_name, "--", "set", "logical_switch_port",
+              switch_port_name, "type=router",
+              "options:router-port=" + router_port_name,
+              "addresses=" + "\"" + router_mac + "\"")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(title='Subcommands',
+                                       dest='command_name')
+
+    # Parser for sub-command 'tenant-init'.
+    parser_tenant_init = subparsers.add_parser(
+                                        'tenant-init',
+                                        help="Initialize mesos tenant router")
+    parser_tenant_init.add_argument('--tenant-name',
+                                    required=True,
+                                    help="A unique tenant name.")
+    parser_tenant_init.set_defaults(func=tenant_init)
+
+    # Parse for sub-command 'network-init'
+    parser_network_init = subparsers.add_parser(
+                                        'network-init',
+                                        help="Initialize mesos network")
+    parser_network_init.add_argument('--tenant-name',
+                                     required=True,
+                                     help="A unique tenant name.")
+    parser_network_init.add_argument('--network-name',
+                                     required=True,
+                                     help="A unique network name.")
+    parser_network_init.add_argument('--subnet',
+                                     required=True,
+                                     help="A subnet for the tenant")
+    parser_network_init.set_defaults(func=network_init)
+
+    # Parser for sub-command 'gateway-init'.
+    parser_gateway_init = subparsers.add_parser(
+                                           'gateway-init',
+                                           help="Initialize tenant gateway "
+                                           "node")
+    parser_gateway_init.add_argument('--cluster-ip-subnet', required=True,
+                                     help="The cluster wide larger subnet of "
+                                     "private ip addresses.")
+    parser_gateway_init.add_argument('--physical-interface',
+                                     help="The physical interface via which "
+                                     "external connectivity is provided.")
+    parser_gateway_init.add_argument('--bridge-interface',
+                                     help="The OVS bridge interface via which "
+                                     "external connectivity is provided.")
+    parser_gateway_init.add_argument('--physical-ip', required=True,
+                                     help="The ip address of the physical "
+                                     "interface or bridge interface via which "
+                                     "external connectivity is provided. This "
+                                     "should be of the form IP/MASK.")
+    parser_gateway_init.add_argument('--default-gw',
+                                     help="The next hop IP address for your "
+                                     "physical interface.")
+    parser_gateway_init.add_argument('--tenant-name',
+                                     required=True,
+                                     help="A unique tenant name.")
+    parser_gateway_init.add_argument('--rampout-ip-subnets',
+                                     help="Uses this gateway to rampout "
+                                     "traffic originating from the specified "
+                                     "comma separated ip subnets.  Used to "
+                                     "distribute outgoing traffic via "
+                                     "multiple gateways.")
+    parser_gateway_init.set_defaults(func=gateway_init)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+        print("Initialization complete.")
+    except Exception as e:
+        sys.stderr.write("Failed operation.\n(%s)\n at %s"
+                         % (str(e), traceback.format_exc()))
+        sys.exit(1)

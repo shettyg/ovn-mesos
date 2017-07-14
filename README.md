@@ -95,28 +95,62 @@ sh install.sh
 
 ### Setting up OVN networks
 
-If your goal is to create a container on network $SWITCH with a subnet
-$SUBNET, you should first create that network.  You only need to do
-this once.  Run the following command on master node.
+For each tenant $TENANT, create a OVN router by running the following
+command
 
 ```
-ovn-nbctl ls-add $SWITCH -- set logical_switch $SWITCH \
-    other_config:subnet="$SUBNET"
+bin/ovn-mesos-init tenant-init --tenant-name $TENANT
+```
+
+For the tenant, you need to create a "gateway" for north-south connectivity.
+You should also decide on a large private subnet $CLUSTER_IP_SUBNET for the
+tenant (which can further be divided into smaller pieces for each network for
+that tenant).  Consider a host (where you have installed OVN), with an
+additional network interface (i.e a physical network interface in addition to
+the one you use for mgmt) named "eth1" with an IP address of $PHYSICAL_IP and
+a external gateway of $EXTERNAL_GATEWAY, run the following command.
+
+```
+bin/ovn-mesos-init gateway-init --cluster-ip-subnet=$CLUSTER_IP_SUBNET \
+    --physical-interface=eth1 --physical-ip=$PHYSICAL_IP \
+    --default-gw=$EXTERNAL_GATEWAY --tenant-name="$TENANT"
+```
+
+An example is:
+
+```
+bin/ovn-mesos-init gateway-init --cluster-ip-subnet="192.168.0.0/16" \
+    --physical-interface=eth1 --physical-ip=10.33.75.150/22 \
+    --default-gw=10.33.75.253 --tenant-name="coke"
+```
+
+For the above tenant, if your goal is to create a container on network
+$SWITCH with a subnet $SUBNET, you should first create that network.
+You only need to do this once.  Run the following command on master node.
+
+```
+bin/ovn-mesos-init network-init --network-name="SWITCH" \
+    --subnet="$SUBNET" --tenant-name="TENANT"
+```
+
+An example is:
+
+```
+bin/ovn-mesos-init network-init --network-name="coke1" \
+    --subnet="192.168.1.0/24" --tenant-name="coke"
 ```
 
 ### Passing the network to mesos.
 
 You can pass the required network information to mesos by setting the correct
-labels for a network named "ovn".  OVN needs you to also pass the task_id via
-the label. e.g:
+labels for a network named "ovn".
 
 ```
 "network_infos" : [{
                      "name": "ovn",
                      "labels": {
                           "labels" : [
-                              { "key" : "logical_switch", "value" : "$SWITCH" },
-                              { "key" : "task_id", "value" : "1234" }
+                              { "key" : "logical_switch", "value" : "$SWITCH" }
                            ]
                       }
                   }]
@@ -124,7 +158,7 @@ the label. e.g:
 
 When the container is created in mesos, the mesos agent will call the
 OVN CNI plugin. The OVN CNI plugin inturn will create a logical switch
-port in the provided logical_switch.  It uses the passed task_id to
+port in the provided logical_switch.  It uses the passed container_id to
 name the logical_port.
 
 [INSTALL.rst]: http://docs.openvswitch.org/en/latest/intro/install
