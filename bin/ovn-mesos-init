@@ -144,24 +144,6 @@ def tenant_init(args):
               "addresses=" + "\"" + router_mac + "\"")
 
 
-def generate_gateway_ip():
-    # All the routers connected to "join" switch are in 100.64.1.0/24
-    # network and they have their external_ids:connect_to_join set.
-    ips = ovn_nbctl("--data=bare", "--no-heading", "--columns=network",
-                    "find", "logical_router_port",
-                    "external_ids:connect_to_join=yes").split()
-
-    ip_start = netaddr.IPNetwork("100.64.1.0/24")
-    ip_max = netaddr.IPNetwork("100.64.1.255/24")
-
-    while ip_start.value != ip_max.value:
-        ip_start.value = ip_start.value + 1
-        if str(ip_start) not in ips:
-            return str(ip_start)
-
-    raise Exception("Ran out of IPs for gateway routers")
-
-
 def gateway_init(args):
     if not args.tenant_name or not args.cluster_ip_subnet \
        or not args.physical_ip:
@@ -184,22 +166,11 @@ def gateway_init(args):
 
     system_id = get_local_system_id()
 
-    # Find if gateway routers have been created before.
-    first_gateway = "no"
-    physical_gateways = ovn_nbctl(
-                                "--data=bare", "--no-heading",
-                                "--columns=_uuid", "find",
-                                "logical_router",
-                                "options:chassis!=null").split()
-    if not physical_gateways:
-        first_gateway = "yes"
-
     # Create a gateway router.
     gateway_router = "GR_%s_%s" % (tenant_name, system_id)
     ovn_nbctl("--", "--may-exist", "lr-add", gateway_router, "--", "set",
               "logical_router", gateway_router, "options:chassis=" + system_id,
-              "external_ids:physical_ip=" + str(physical_ip.ip),
-              "external_ids:first_gateway=" + first_gateway)
+              "external_ids:physical_ip=" + str(physical_ip.ip))
 
     join_switch = "join_%s" % tenant_name
 
@@ -209,7 +180,7 @@ def gateway_init(args):
                            "rtoj-" + gateway_router, "mac").strip('"')
     if not router_mac:
         router_mac = generate_mac()
-        router_ip = generate_gateway_ip()
+        router_ip = "100.64.1.2/24"
         ovn_nbctl("--", "--may-exist", "lrp-add", gateway_router,
                   "rtoj-" + gateway_router, router_mac, router_ip,
                   "--", "set", "logical_router_port", "rtoj-" + gateway_router,
@@ -231,7 +202,7 @@ def gateway_init(args):
               "0.0.0.0/0", "100.64.1.2")
 
     # Create the external switch for the physical interface to connect to.
-    external_switch = "ext_%s" % (system_id)
+    external_switch = "ext_%s_%s" % (args.physical_interface, system_id)
     ovn_nbctl("--may-exist", "ls-add", external_switch)
 
     if args.physical_interface:
@@ -359,9 +330,6 @@ def main():
     parser_gateway_init.add_argument('--physical-interface',
                                      help="The physical interface via which "
                                      "external connectivity is provided.")
-    parser_gateway_init.add_argument('--bridge-interface',
-                                     help="The OVS bridge interface via which "
-                                     "external connectivity is provided.")
     parser_gateway_init.add_argument('--physical-ip', required=True,
                                      help="The ip address of the physical "
                                      "interface or bridge interface via which "
@@ -373,12 +341,6 @@ def main():
     parser_gateway_init.add_argument('--tenant-name',
                                      required=True,
                                      help="A unique tenant name.")
-    parser_gateway_init.add_argument('--rampout-ip-subnets',
-                                     help="Uses this gateway to rampout "
-                                     "traffic originating from the specified "
-                                     "comma separated ip subnets.  Used to "
-                                     "distribute outgoing traffic via "
-                                     "multiple gateways.")
     parser_gateway_init.set_defaults(func=gateway_init)
 
     args = parser.parse_args()
