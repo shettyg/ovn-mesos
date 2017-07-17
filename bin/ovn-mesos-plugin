@@ -256,8 +256,11 @@ def cni_add(cni_ifname, cni_netns, container_id, mesos_config):
         vlog.err("Unable to plug interface into OVN bridge")
         raise OVNCNIException(106, "failure in plugging pod interface")
 
-    output = json.dumps({'ip_address': ip_address_mask,
-                        'gateway_ip': gateway_ip, 'mac_address': mac_address})
+    output = json.dumps(
+                {"cniVersion": CNI_VERSION,
+                 "ip4": {"ip": ip_address_mask, "gateway": gateway_ip}
+                 })
+
     vlog.dbg("output is %s" % output)
     print(output)
 
