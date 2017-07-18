@@ -9,6 +9,7 @@ apt-get install -y build-essential fakeroot debhelper \
                     autoconf automake libssl-dev \
                     openssl python-all \
                     python-setuptools \
+                    python-six \
                     libtool git dh-autoreconf \
                     linux-headers-$(uname -r)
 easy_install -U pip
@@ -48,6 +49,8 @@ upstream linux.
 ```
 cat > /etc/depmod.d/openvswitch.conf << EOF
 override openvswitch * extra
+override vport-geneve * extra
+override vport-stt * extra
 override vport-* * extra
 EOF
 ```
