@@ -1,0 +1,27 @@
+---
+box: "ubuntu/xenial64"
+public_network1: "10.10.0.0/16"
+public_gateway1: "10.10.0.1"
+public_network2: "10.11.0.0/16"
+public_gateway2: "10.11.0.1"
+mesos-master:
+  short_name: "mesos-master"
+  host_name: "mesos-master"
+  public-ip1: "10.10.0.11"
+  public-ip2: "10.10.0.11"
+  memory: 2048
+  cpus: 2
+mesos-agent1:
+  short_name: "mesos-agent1"
+  host_name: "mesos-agent1"
+  public-ip1: "10.10.0.12"
+  public-ip2: "10.11.0.12"
+  memory: 2048
+  cpus: 2
+mesos-agent2:
+  short_name: "mesos-agent2"
+  host_name: "mesos-agent2"
+  public-ip1: "10.10.0.13"
+  public-ip2: "10.11.0.13"
+  memory: 2048
+  cpus: 2

@@ -1,0 +1,88 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+require 'yaml'
+require 'ipaddr'
+
+vagrant_config = YAML.load_file("provisioning/virtualbox.conf.yml")
+
+Vagrant.configure(2) do |config|
+  config.vm.box = "ubuntu/xenial64"
+
+  # Use the ipaddr library to calculate the netmask of a given network
+  net1 = IPAddr.new vagrant_config['public_network1']
+  netmask1 = net1.inspect().split("/")[1].split(">")[0]
+
+  net2 = IPAddr.new vagrant_config['public_network2']
+  netmask2 = net2.inspect().split("/")[1].split(">")[0]
+
+  # Bring up the Devstack ovsdb/ovn-northd node on Virtualbox
+  config.vm.define "mesos-master" do |master|
+    master.vm.host_name = vagrant_config['mesos-master']['host_name']
+    master.vm.network "private_network", ip: vagrant_config['mesos-master']['public-ip1'], netmask: netmask1
+    master.vm.network "private_network", ip: vagrant_config['mesos-master']['public-ip2'], netmask: netmask2
+    master.vm.provision "shell", path: "provisioning/setup-master.sh", privileged: false,
+      :args => "#{vagrant_config['mesos-master']['public-ip1']} #{vagrant_config['mesos-master']['public-ip2']}"
+    master.vm.provider "virtualbox" do |vb|
+       vb.name = vagrant_config['mesos-master']['short_name']
+       vb.memory = 2048
+       vb.cpus = 2
+       vb.customize [
+           'modifyvm', :id,
+           '--nicpromisc3', "allow-all"
+          ]
+       vb.customize [
+           "guestproperty", "set", :id,
+           "/VirtualBox/GuestAdd/VBoxService/--timesync-set-threshold", 10000
+          ]
+    end
+  end
+
+  config.vm.define "mesos-agent1" do |agent1|
+    agent1.vm.host_name = vagrant_config['mesos-agent1']['host_name']
+    agent1.vm.network "private_network", ip: vagrant_config['mesos-agent1']['public-ip1'], netmask: netmask1
+    agent1.vm.network "private_network", ip: vagrant_config['mesos-agent1']['public-ip2'], netmask: netmask2
+    agent1.vm.provision "shell", path: "provisioning/setup-agent.sh", privileged: false,
+      :args => "#{vagrant_config['mesos-agent1']['public-ip1']} #{vagrant_config['mesos-agent1']['public-ip2']}"
+    agent1.vm.provider "virtualbox" do |vb|
+       vb.name = vagrant_config['mesos-agent1']['short_name']
+       vb.memory = 2048
+       vb.cpus = 2
+       vb.customize [
+           'modifyvm', :id,
+           '--nicpromisc3', "allow-all"
+          ]
+       vb.customize [
+           "guestproperty", "set", :id,
+           "/VirtualBox/GuestAdd/VBoxService/--timesync-set-threshold", 10000
+          ]
+    end
+  end
+
+  config.vm.define "mesos-agent2" do |agent2|
+    agent2.vm.host_name = vagrant_config['mesos-agent2']['host_name']
+    agent2.vm.network "private_network", ip: vagrant_config['mesos-agent2']['public-ip1'], netmask: netmask1
+    agent2.vm.network "private_network", ip: vagrant_config['mesos-agent2']['public-ip2'], netmask: netmask2
+    agent2.vm.provision "shell", path: "provisioning/setup-agent.sh", privileged: false,
+      :args => "#{vagrant_config['mesos-agent2']['public-ip1']} #{vagrant_config['mesos-agent2']['public-ip2']}"
+    agent2.vm.provider "virtualbox" do |vb|
+       vb.name = vagrant_config['mesos-agent2']['short_name']
+       vb.memory = 2048
+       vb.cpus = 2
+       vb.customize [
+           'modifyvm', :id,
+           '--nicpromisc3', "allow-all"
+          ]
+       vb.customize [
+           "guestproperty", "set", :id,
+           "/VirtualBox/GuestAdd/VBoxService/--timesync-set-threshold", 10000
+          ]
+    end
+  end
+
+  config.vm.provider "virtualbox" do |v|
+    v.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    v.customize ["modifyvm", :id, "--natdnsproxy1", "on"]
+    v.customize ["modifyvm", :id, "--nictype1", "virtio"]
+  end
+end
