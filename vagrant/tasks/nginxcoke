@@ -1,0 +1,46 @@
+{
+       "name": "task2",
+       "task_id": {"value" : "9234"},
+       "agent_id": {"value" : ""},
+       "container": {
+                    "type": "MESOS",
+                    "mesos": {
+                        "image": {
+                        "type": "DOCKER",
+                        "docker": {
+                                "name": "nginx"
+                         }
+                       }
+                     },
+                     "network_infos" : [{
+                         "name": "ovn",
+                         "labels": {
+                              "labels" : [
+                                  { "key" : "app", "value" : "myapp" },
+                                  { "key" : "logical_switch", "value" : "coke1" }
+                               ]
+                          }
+                      }]
+                    },
+       "resources": [
+         {
+           "name": "cpus",
+           "type": "SCALAR",
+           "scalar": {
+             "value": 0.1
+           },
+           "roles": "*"
+         },
+         {
+           "name": "mem",
+           "type": "SCALAR",
+           "scalar": {
+             "value": 32
+           },
+           "roles": "*"
+         }
+       ],
+       "command": {
+              "value": "nginx -g 'daemon off;'"
+       }
+}

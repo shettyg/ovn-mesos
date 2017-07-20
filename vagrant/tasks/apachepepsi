@@ -1,0 +1,46 @@
+{
+       "name": "task3",
+       "task_id": {"value" : "4234"},
+       "agent_id": {"value" : ""},
+       "container": {
+                    "type": "MESOS",
+                    "mesos": {
+                        "image": {
+                        "type": "DOCKER",
+                        "docker": {
+                                "name": "fedora/apache"
+                         }
+                       }
+                     },
+                     "network_infos" : [{
+                         "name": "ovn",
+                         "labels": {
+                              "labels" : [
+                                  { "key" : "app", "value" : "myapp" },
+                                  { "key" : "logical_switch", "value" : "pepsi1" }
+                               ]
+                          }
+                      }]
+                    },
+       "resources": [
+         {
+           "name": "cpus",
+           "type": "SCALAR",
+           "scalar": {
+             "value": 0.1
+           },
+           "roles": "*"
+         },
+         {
+           "name": "mem",
+           "type": "SCALAR",
+           "scalar": {
+             "value": 32
+           },
+           "roles": "*"
+         }
+       ],
+       "command": {
+              "value": "/run-apache.sh"
+       }
+}
