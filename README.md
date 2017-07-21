@@ -192,7 +192,9 @@ name the logical_port.
 
 ## Vagrant
 
-The repo comes with a simple vagrant to try out a basic installation.
+The repo comes with a simple vagrant to try out a basic installation. The
+vagrant is also useful to figure out the installation setps by looking at
+the scripts in its provisioning directory.
 
 [INSTALL.rst]: http://docs.openvswitch.org/en/latest/intro/install
 [INSTALL.UBUNTU.md]: docs/INSTALL.UBUNTU.md

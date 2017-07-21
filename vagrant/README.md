@@ -1,6 +1,6 @@
 ## Mesos and OVN
 
-This contains a Vagrant setup for Kubernetes and OVN integration.  This needs
+This contains a Vagrant setup for Mesos and OVN integration.  This needs
 a minimum vagrant version of 1.8.5 and is known to atleast work on Mac,
 Ubuntu 16.04 and Windows 10.
 
@@ -47,7 +47,7 @@ sudo ovn-mesos-init gateway-init --cluster-ip-subnet=192.168.0.0/16 \
     --default-gw=10.10.1.1 --tenant-name="$TENANT"
 ```
 
-Let us no create a network for this tenant with a subnet of "192.168.1.0/24"
+Let us now create a network for this tenant with a subnet of "192.168.1.0/24"
 
 ```
 TENANT="coke"
@@ -80,3 +80,5 @@ network "coke1"
 source setup_master_args.sh
 sudo mesos-execute --master=$OVERLAY_IP:5050 --task=file:///home/ubuntu/nginxcoke
 ```
+
+The two containers should be able to talk to each other.
