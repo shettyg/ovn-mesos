@@ -102,13 +102,14 @@ command
 bin/ovn-mesos-init tenant-init --tenant-name $TENANT
 ```
 
-For the tenant, you need to create a "gateway" for north-south connectivity.
-You should also decide on a large private subnet $CLUSTER_IP_SUBNET for the
-tenant (which can further be divided into smaller pieces for each network for
-that tenant).  Consider a host (where you have installed OVN), with an
-additional network interface (i.e a physical network interface in addition to
-the one you use for mgmt) named "eth1" with an IP address of $PHYSICAL_IP and
-a external gateway of $EXTERNAL_GATEWAY, run the following command.
+For the tenant, you need to create a "gateway router" for north-south
+connectivity.  You should also decide on a large private subnet
+$CLUSTER_IP_SUBNET for the tenant (which can further be divided into smaller
+pieces for each network for that tenant).  Consider a host (where you have
+installed OVN), with an additional network interface (i.e a physical network
+interface in addition to the one you use for mgmt) named "eth1" with an IP
+address of $PHYSICAL_IP and a external gateway of $EXTERNAL_GATEWAY, run the
+following command.
 
 ```
 bin/ovn-mesos-init gateway-init --cluster-ip-subnet=$CLUSTER_IP_SUBNET \
@@ -124,13 +125,41 @@ bin/ovn-mesos-init gateway-init --cluster-ip-subnet="192.168.0.0/16" \
     --default-gw=10.33.75.253 --tenant-name="coke"
 ```
 
+Note1: For each tenant, you will need a separate gateway router.  You need this
+to support overlapping IP addresses. You can have multiple gateway routers
+in the same machine.  But each gateway router needs a separate IP address.
+So, if you have a single physical interface "eth1", but it has multiple
+IP addresses (aka floating ips), you can still use the same physical interface
+for all your gateway routers.  When you create your gateway router, you just
+provide a different IP address. You can also have multiple physical interfaces
+and you can dedicate each physical interface for a separate tenant's gateway
+router.  You can also have multiple machines, each with a subset of
+gateway routers.
+
+Note2: You can assign multiple IP addresses to the same gateway router.
+This is useful to provide public IPs for some special public facing
+containers of a tenant. But you don't need to provide those additional
+IP addresses to the "gateway-init" script.  You can use the "DNAT"
+table of OVN, to assign them manually.
+
+Note3: OVN also allows a tenant to have multiple gateway routers spread
+across multiple machines, but the script "gateway-init" is not coded up for
+that scenario.  An advanced user will have to read 'man ovn-nb' to create this
+configuration and write his own script.
+
+Note4: It is not necessary to have a single large subnet (as provided by
+--cluster-ip-subnet) for all the networks in a tenant. But the "gateway-init"
+script is not written to handle disparate networks. An advanced user can
+easily create such scenarios, once he is familiar with OVN.  OVN  allows
+you to create routers and then have any type of "routes" added to it.
+
 For the above tenant, if your goal is to create a container on network
 $SWITCH with a subnet $SUBNET, you should first create that network.
 You only need to do this once.  Run the following command on master node.
 
 ```
-bin/ovn-mesos-init network-init --network-name="SWITCH" \
-    --subnet="$SUBNET" --tenant-name="TENANT"
+bin/ovn-mesos-init network-init --network-name="$SWITCH" \
+    --subnet="$SUBNET" --tenant-name="$TENANT"
 ```
 
 An example is:
