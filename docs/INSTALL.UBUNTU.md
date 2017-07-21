@@ -1,5 +1,45 @@
-Installing OVS and OVN from sources on Ubuntu
-=============================================
+# Installing OVS and OVN on Ubuntu
+
+## Installing OVS and OVN from packages
+
+Some students in a university in New Zealand maintain OVS and OVN packages at
+http://packages.wand.net.nz/
+
+To install packages from there, you can run:
+
+```
+sudo apt-get install apt-transport-https
+echo "deb https://packages.wand.net.nz $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/wand.list
+sudo curl https://packages.wand.net.nz/keyring.gpg -o /etc/apt/trusted.gpg.d/wand.gpg
+sudo apt-get update
+```
+
+To install OVS bits on all nodes, run:
+
+```
+sudo apt-get build-dep dkms
+sudo apt-get install python-six openssl python-pip -y
+sudo -H pip install --upgrade pip
+
+sudo apt-get install openvswitch-datapath-dkms -y
+sudo apt-get install openvswitch-switch openvswitch-common -y
+sudo -H pip install ovs
+```
+
+On the master node, where you intend to start OVN's central components,
+run:
+
+```
+sudo apt-get install ovn-central ovn-common -y
+```
+
+On the agent nodes, run:
+
+```
+sudo apt-get install ovn-host ovn-common -y
+```
+
+## Installing OVS and OVN from sources
 
 Install a few pre-requisite packages.
 
