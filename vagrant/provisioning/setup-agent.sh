@@ -9,7 +9,6 @@ set -o xtrace
 # $2: IP of third interface of agent
 
 OVERLAY_IP="$1"
-PUBLIC_IP2="$2"
 
 # Find the master IP
 source /vagrant/master_ip.sh
@@ -17,7 +16,6 @@ source /vagrant/master_ip.sh
 cat > setup_agent_args.sh <<EOL
 OVERLAY_IP=$OVERLAY_IP
 MASTER_IP=$MASTER_IP
-PUBLIC_IP2=$PUBLIC_IP2
 EOL
 
 # FIXME(mestery): Remove once Vagrant boxes allow apt-get to work again
@@ -58,7 +56,7 @@ sudo dpkg -i mesos_*.deb
 sudo apt-get install -f -y
 
 # Start mesos agent
-nohup sudo mesos-agent --ip=$OVERLAY_IP --advertise_ip=$OVERLAY_IP --master=$MASTER_IP:5050  --work_dir=/var/lib/mesos --isolation=filesystem/linux,docker/runtime  --image_providers=docker --containerizers=mesos --network_cni_config_dir=/var/lib/mesos/cni/config --network_cni_plugins_dir=/var/lib/mesos/cni/plugins --http_command_executor 2>&1 0<&- &>/dev/null &
+nohup sudo mesos-agent --ip=$OVERLAY_IP --advertise_ip=$OVERLAY_IP --master=$MASTER_IP:5050  --work_dir=/var/lib/mesos --isolation=filesystem/linux,docker/runtime  --image_providers=docker --containerizers=mesos --network_cni_config_dir=/var/lib/mesos/cni/config --network_cni_plugins_dir=/var/lib/mesos/cni/plugins --http_command_executor 1>&2 2>/home/ubuntu/mesos-agent.log &
 
 # Restore xtrace
 $XTRACE

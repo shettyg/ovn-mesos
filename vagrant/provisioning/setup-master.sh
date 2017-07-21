@@ -66,7 +66,7 @@ sudo dpkg -i mesos_*.deb
 sudo apt-get install -f -y
 
 # Start mesos master
-nohup sudo mesos-master --ip=$OVERLAY_IP --work_dir=/var/lib/mesos 2>&1 0<&- &>/dev/null &
+nohup sudo mesos-master --ip=$OVERLAY_IP --work_dir=/var/lib/mesos 1>&2 2>/home/ubuntu/mesos-master.log &
 
 # Restore xtrace
 $XTRACE

@@ -99,7 +99,7 @@ For each tenant $TENANT, create a OVN router by running the following
 command
 
 ```
-bin/ovn-mesos-init tenant-init --tenant-name $TENANT
+ovn-mesos-init tenant-init --tenant-name $TENANT
 ```
 
 For the tenant, you need to create a "gateway router" for north-south
@@ -112,7 +112,7 @@ address of $PHYSICAL_IP and a external gateway of $EXTERNAL_GATEWAY, run the
 following command.
 
 ```
-bin/ovn-mesos-init gateway-init --cluster-ip-subnet=$CLUSTER_IP_SUBNET \
+ovn-mesos-init gateway-init --cluster-ip-subnet=$CLUSTER_IP_SUBNET \
     --physical-interface=eth1 --physical-ip=$PHYSICAL_IP \
     --default-gw=$EXTERNAL_GATEWAY --tenant-name="$TENANT"
 ```
@@ -120,7 +120,7 @@ bin/ovn-mesos-init gateway-init --cluster-ip-subnet=$CLUSTER_IP_SUBNET \
 An example is:
 
 ```
-bin/ovn-mesos-init gateway-init --cluster-ip-subnet="192.168.0.0/16" \
+ovn-mesos-init gateway-init --cluster-ip-subnet="192.168.0.0/16" \
     --physical-interface=eth1 --physical-ip=10.33.75.150/22 \
     --default-gw=10.33.75.253 --tenant-name="coke"
 ```
@@ -158,14 +158,14 @@ $SWITCH with a subnet $SUBNET, you should first create that network.
 You only need to do this once.  Run the following command on master node.
 
 ```
-bin/ovn-mesos-init network-init --network-name="$SWITCH" \
+ovn-mesos-init network-init --network-name="$SWITCH" \
     --subnet="$SUBNET" --tenant-name="$TENANT"
 ```
 
 An example is:
 
 ```
-bin/ovn-mesos-init network-init --network-name="coke1" \
+ovn-mesos-init network-init --network-name="coke1" \
     --subnet="192.168.1.0/24" --tenant-name="coke"
 ```
 
@@ -189,6 +189,10 @@ When the container is created in mesos, the mesos agent will call the
 OVN CNI plugin. The OVN CNI plugin inturn will create a logical switch
 port in the provided logical_switch.  It uses the passed container_id to
 name the logical_port.
+
+## Vagrant
+
+The repo comes with a simple vagrant to try out a basic installation.
 
 [INSTALL.rst]: http://docs.openvswitch.org/en/latest/intro/install
 [INSTALL.UBUNTU.md]: docs/INSTALL.UBUNTU.md

@@ -39,7 +39,7 @@ Vagrant.configure(2) do |config|
     agent1.vm.host_name = vagrant_config['mesos-agent1']['host_name']
     agent1.vm.network "private_network", ip: vagrant_config['mesos-agent1']['public-ip1'], netmask: netmask1
     agent1.vm.provision "shell", path: "provisioning/setup-agent.sh", privileged: false,
-      :args => "#{vagrant_config['mesos-agent1']['public-ip1']} #{vagrant_config['mesos-agent1']['public-ip2']}"
+      :args => "#{vagrant_config['mesos-agent1']['public-ip1']}"
     agent1.vm.provider "virtualbox" do |vb|
        vb.name = vagrant_config['mesos-agent1']['short_name']
        vb.memory = 2048
