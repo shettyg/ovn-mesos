@@ -10,15 +10,10 @@ set -o xtrace
 # $3: Hostname of the master
 # $4: Master switch subnet
 
-PUBLIC_IP1=$1
+OVERLAY_IP=$1
 PUBLIC_IP2=$2
 
-# Find the mgmt IP
-INTF=`route -n | grep '^0.0.0.0' | awk '{print $NF}'`
-OVERLAY_IP=`ifconfig $INTF | grep 'inet addr' | awk '{print $2}'  | awk -F\: '{print $2}'`
-
 cat > setup_master_args.sh <<EOL
-PUBLIC_IP1=$1
 PUBLIC_IP2=$2
 OVERLAY_IP=$OVERLAY_IP
 EOL
@@ -28,7 +23,7 @@ cat > /vagrant/master_ip.sh <<EOL
 export MASTER_IP=$OVERLAY_IP
 EOL
 
-# FIXME(mestery): Remove once Vagrant boxes allow apt-get to work again
+# Remove once Vagrant boxes allow apt-get to work again
 sudo rm -rf /var/lib/apt/lists/*
 
 # Install OVS
@@ -50,7 +45,7 @@ sudo ovs-vsctl set Open_vSwitch . external_ids:ovn-remote="tcp:$OVERLAY_IP:6642"
                                   external_ids:ovn-encap-type=geneve
 
 # Install OVN
-sudo apt-get install ovn-central=2.7.0-1 ovn-common=2.7.0-1 -y
+sudo apt-get install ovn-central=2.7.0-1 ovn-common=2.7.0-1 ovn-host=2.7.0-1 -y
 
 # Install ovn-mesos
 git clone https://github.com/shettyg/ovn-mesos
@@ -58,6 +53,9 @@ pushd ovn-mesos
 sudo -H pip install -r requirements.txt
 sudo sh install.sh
 popd
+
+# Copy some example task files.
+cp ovn-mesos/vagrant/tasks/* .
 
 sudo ovn-nbctl set-connection ptcp:6641
 sudo ovn-sbctl set-connection ptcp:6642

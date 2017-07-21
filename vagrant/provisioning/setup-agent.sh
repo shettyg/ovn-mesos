@@ -8,21 +8,16 @@ set -o xtrace
 # $1: IP of second interface of agent
 # $2: IP of third interface of agent
 
-PUBLIC_IP1=$1
-PUBLIC_IP2=$2
-
-# Find the mgmt IP
-INTF=`route -n | grep '^0.0.0.0' | awk '{print $NF}'`
-OVERLAY_IP=`ifconfig $INTF | grep 'inet addr' | awk '{print $2}'  | awk -F\: '{print $2}'`
+OVERLAY_IP="$1"
+PUBLIC_IP2="$2"
 
 # Find the master IP
 source /vagrant/master_ip.sh
 
 cat > setup_agent_args.sh <<EOL
-PUBLIC_IP1=$1
-PUBLIC_IP2=$2
 OVERLAY_IP=$OVERLAY_IP
 MASTER_IP=$MASTER_IP
+PUBLIC_IP2=$PUBLIC_IP2
 EOL
 
 # FIXME(mestery): Remove once Vagrant boxes allow apt-get to work again
