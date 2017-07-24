@@ -96,7 +96,7 @@ The above command creates a load-balancer. Let us get its $LB_UUID.
 LB_UUID=`sudo ovn-nbctl --data=bare --no-heading --columns=_uuid find load-balancer name=coke`
 ```
 
-We now need to assocaite this load-balancer with the gateway router for this
+We now need to associate this load-balancer with the gateway router for this
 tenant.  To do this, we should get the UUID of the gateway router setup for
 this tenant.  When the "ovn-mesos-init gateway-init" script was run for this
 tenant, it creates a gateway router with the following name format:
@@ -106,7 +106,7 @@ script on the "mesos-master" host, we can run the following command to get
 the $OVS_SYSTEM_ID
 
 ```
-OVS_SYSTEM_ID=`sudo ovs-vsctl get Open_vSwitch . external_ids:system-id`
+OVS_SYSTEM_ID=`sudo ovs-vsctl get Open_vSwitch . external_ids:system-id | sed -e 's/"//g'`
 ```
 
 Since our tenant is "coke", our gateway router's name is
@@ -122,6 +122,131 @@ From your underlying host, you can now run
 
 ```
 curl 10.10.1.12:32350
+```
+
+Running the above command should randomly give you either "Apache" or an html
+page of Nginx.
+
+### A tenant "Pepsi"
+
+For tenant pepsi, let us choose "mesos-agent1" to be the gateway node.
+Log into mesos-agent1 by running
+* vagrant ssh mesos-agent1
+
+Lets create the netwoking needed for a tenant "pepsi", by running:
+
+```
+sudo ovn-mesos-init tenant-init --tenant-name pepsi
+```
+
+Note: The above command can be run from mesos-master too.
+
+'mesos-agent1' node has three physical interfaces. The first
+physical interface is exclusively used by vagrant for mgmt.
+
+The second and third interface are used by the ovn-mesos
+integration.  The second interface is for mesos-agent to
+talk to mesos-master. This interface is also used by
+ovn-controller running in mesos-agent to talk to OVN's databases
+running in mesos-master.  This interface is also used as the
+tunnel endpoint for overlay networks created by OVN.
+
+The third interface is used here for the purpose of gateway.
+It's IP address is 10.10.1.14/24.  Get the interface name of this
+interface.  Let us assume it is "enp0s9".  For the tenant "pepsi",
+we will use this interface for gateway purposes.
+
+```
+PHYSICAL_INTERFACE="enp0s9"
+sudo ovn-mesos-init gateway-init --cluster-ip-subnet=192.168.0.0/16 \
+    --physical-interface=$PHYSICAL_INTERFACE --physical-ip=10.10.1.14/24 \
+    --default-gw=10.10.1.1 --tenant-name="pepsi"
+```
+
+Note: The above command has to be run from "mesos-agent1" because that
+is the machine which has enp0s9.
+
+Let us now create a network for this tenant with a subnet of "192.168.1.0/24".
+Note how this is the same subnet for tenant "coke". That is okay as OVN can
+handle overlapping IP addresses.
+
+```
+NETWORK="pepsi1"
+SUBNET="192.168.1.0/24"
+sudo ovn-mesos-init network-init --network-name="$NETWORK" \
+    --subnet="$SUBNET" --tenant-name="pepsi"
+```
+
+Let us go ahead and run the first container (a apache webserver) now in
+network "pepsi1".
+
+* vagrant ssh mesos-master
+
+```
+source setup_master_args.sh
+sudo mesos-execute --master=$OVERLAY_IP:5050 --task=file:///home/ubuntu/apachepepsi
+```
+
+This container gets created in one of the agent VMs. You can find it's network
+namespace by running 'ip netns ls' on the both agents.  Assuming the network
+namespace is $NAMESPACE1, you can get its allocated IP address with:
+
+```
+sudo ip netns exec $NAMESPACE1 ifconfig -a
+```
+
+Let us go ahead and run the second container (a nginx webserver) now in
+network "pepsi1"
+
+```
+source setup_master_args.sh
+sudo mesos-execute --master=$OVERLAY_IP:5050 --task=file:///home/ubuntu/nginxpepsi
+```
+
+The two containers should be able to talk to each other.
+
+For the two containers, let us go ahead and setup North-South connectivity.
+
+Let us start with creating a L4 load-balancer for the two webservers we
+created. (Run this command in the mesos-master.)
+
+```
+sudo ovn-nbctl --may-exist lb-add pepsi '10.10.1.14:32350' '192.168.1.2:80,192.168.1.3:80'
+```
+
+The above command creates a load-balancer. Let us get its $LB_UUID.
+
+```
+LB_UUID=`sudo ovn-nbctl --data=bare --no-heading --columns=_uuid find load-balancer name=pepsi`
+```
+
+We now need to associate this load-balancer with the gateway router for this
+tenant.  To do this, we should get the UUID of the gateway router setup for
+this tenant.  When the "ovn-mesos-init gateway-init" script was run for this
+tenant, it creates a gateway router with the following name format:
+"GR_$TENANT_NAME_$OVS_SYSTEM_ID".  The $OVS_SYSTEM_ID is the unique uuid
+for each host that OVS runs on.  Since we ran the "ovn-mesos-init gateway-init"
+script on the "mesos-agent1" host, we can run the following command on 
+that host to get the $OVS_SYSTEM_ID
+
+```
+OVS_SYSTEM_ID=`sudo ovs-vsctl get Open_vSwitch . external_ids:system-id | sed -e 's/"//g'`
+```
+
+Since our tenant is "pepsi", our gateway router's name is
+"GR_pepsi_$OVS_SYSTEM_ID".
+
+Switch back to "mesos-master" (make sure to copy $OVS_SYSTEM_ID too).
+Let us assocaite our load-balancer with this gateway router. 
+
+```
+sudo ovn-nbctl set logical_router GR_pepsi_$OVS_SYSTEM_ID load_balancer=$LB_UUID
+```
+
+From your underlying host, you can now run
+
+```
+curl 10.10.1.14:32350
 ```
 
 Running the above command should randomly give you either "Apache" or an html

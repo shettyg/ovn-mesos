@@ -9,6 +9,7 @@ set -o xtrace
 # $2: IP of third interface of agent
 
 OVERLAY_IP="$1"
+PUBLIC_IP2="$2"
 
 # Find the master IP
 source /vagrant/master_ip.sh
@@ -16,6 +17,7 @@ source /vagrant/master_ip.sh
 cat > setup_agent_args.sh <<EOL
 OVERLAY_IP=$OVERLAY_IP
 MASTER_IP=$MASTER_IP
+PUBLIC_IP2=$PUBLIC_IP2
 EOL
 
 # FIXME(mestery): Remove once Vagrant boxes allow apt-get to work again

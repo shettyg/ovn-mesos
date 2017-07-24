@@ -13,11 +13,12 @@ mesos-agent1:
   short_name: "mesos-agent1"
   host_name: "mesos-agent1"
   public-ip1: "10.10.1.13"
+  public-ip2: "10.10.1.14"
   memory: 2048
   cpus: 2
 mesos-agent2:
   short_name: "mesos-agent2"
   host_name: "mesos-agent2"
-  public-ip1: "10.10.1.14"
+  public-ip1: "10.10.1.15"
   memory: 2048
   cpus: 2
