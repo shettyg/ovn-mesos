@@ -172,7 +172,8 @@ ovn-mesos-init network-init --network-name="coke1" \
 ### Passing the network to mesos.
 
 You can pass the required network information to mesos by setting the correct
-labels for a network named "ovn".
+labels for a network provider "ovn". The "$SWITCH" is the name of the network
+on which your container runs (e.g: "coke1").
 
 ```
 "network_infos" : [{
@@ -193,7 +194,7 @@ name the logical_port.
 ## Vagrant
 
 The repo comes with a simple vagrant to try out a basic installation. The
-vagrant is also useful to figure out the installation setps by looking at
+vagrant is also useful to figure out the installation steps by looking at
 the scripts in its provisioning directory.
 
 [INSTALL.rst]: http://docs.openvswitch.org/en/latest/intro/install
