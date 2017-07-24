@@ -1,7 +1,8 @@
 # How to Use Open Virtual Networking With Mesos
 
 This document describes how to use Open Virtual Networking with Mesos
-1.4.0 or later.  This document assumes that you have installed Open
+1.3.0 or later (it is possible that it works from mesos 1.1.0 too, but it has
+not been tested yet).  This document assumes that you have installed Open
 vSwitch by following [INSTALL.rst] or by using the distribution packages
 such as .deb or.rpm.  This repo provides a quick start guide at
 [INSTALL.UBUNTU.md]
