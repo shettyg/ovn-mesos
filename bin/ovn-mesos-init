@@ -26,6 +26,7 @@ PRIVATE_KEY = "/etc/openvswitch/ovncontroller-privkey.pem",
 CERTIFICATE = "/etc/openvswitch/ovncontroller-cert.pem",
 CA_CERT = "/etc/openvswitch/ovnnb-ca.cert",
 OVN_NB = ""
+CONNTRACK_ZONE = 64000
 
 
 def call_popen(cmd):
@@ -47,6 +48,10 @@ def call_prog(prog, args_list):
 
 def ovs_vsctl(*args):
     return call_prog("ovs-vsctl", list(args))
+
+
+def ovs_ofctl(*args):
+    return call_prog("ovs-ofctl", list(args))
 
 
 def ovn_nbctl(*args):
@@ -144,15 +149,40 @@ def tenant_init(args):
               "addresses=" + "\"" + router_mac + "\"")
 
 
+def add_conntrack_rules(physical_bridge, physical_interface_ofport,
+                        br_int_ofport):
+    # table 0, packets coming from pods headed externally. Commit connections
+    # so that reverse direction goes back to the pods.
+    ovs_ofctl("add-flow", physical_bridge,
+              "priority=100, in_port=%d, ip, "
+              "actions=ct(commit, zone=%d), output:%d"
+              % (br_int_ofport, CONNTRACK_ZONE, physical_interface_ofport))
+    # table 0, packets coming from external. Send it through conntrack and
+    # resubmit to table 1 to know the state of the connection.
+    ovs_ofctl("add-flow", physical_bridge,
+              "priority=50, in_port=%d, ip, actions=ct(zone=%d, table=1)"
+              % (physical_interface_ofport, CONNTRACK_ZONE))
+
+    # table 1, established and related connections go to pod.
+    ovs_ofctl("add-flow", physical_bridge,
+              "priority=100, table=1, ct_state=+trk+est, actions=output:%d"
+              % (br_int_ofport))
+    ovs_ofctl("add-flow", physical_bridge,
+              "priority=100, table=1, ct_state=+trk+rel, actions=output:%d"
+              % (br_int_ofport))
+
+    # All other connections get the 'NORMAL' treatment.
+    ovs_ofctl("add-flow", physical_bridge,
+              "priority=0, table=1, actions=NORMAL")
+
+
 def gateway_init(args):
     if not args.tenant_name or not args.cluster_ip_subnet \
        or not args.physical_ip:
         raise Exception("Arguments should be non-null")
 
-    # We want either of args.physical_interface or args.bridge_interface
-    # provided. But not both. (XOR)
     if not args.physical_interface:
-        raise Exception("physical-interface has to be specified")
+        raise Exception("physical interface needed")
 
     physical_ip = netaddr.IPNetwork(args.physical_ip)
     if args.default_gw:
@@ -205,7 +235,44 @@ def gateway_init(args):
     external_switch = "ext_%s_%s" % (args.physical_interface, system_id)
     ovn_nbctl("--may-exist", "ls-add", external_switch)
 
-    if args.physical_interface:
+    if args.bridge_interface:
+        physical_interface_ofport = int(ovs_vsctl("get", "interface",
+                                    args.physical_interface, "ofport"))
+        if physical_interface_ofport <= 0:
+             raise Exception("physical-interface %s is invalid"
+                             % (args.physical_interface))
+
+        # A OVS bridge's mac address can change when ports are added to it.
+        # We cannot let that happen, so make the bridge mac address permanent.
+        mac_address = ovs_vsctl("--if-exists", "get", "interface",
+                                args.bridge_interface,
+                                "mac_in_use").strip('"')
+        if not mac_address:
+            raise Exception("No mac_address found for the bridge-interface")
+
+        ovs_vsctl("set", "bridge", args.bridge_interface,
+                  "other-config:hwaddr=" + mac_address)
+
+        iface_id = "%s_%s" % (args.bridge_interface, system_id)
+
+        # Connect bridge interface to br-int via patch ports.
+        patch1 = "mesos-patch-br-int-" + args.bridge_interface
+        patch2 = "mesos-patch-" + args.bridge_interface + "-br-int"
+        ovs_vsctl("--may-exist", "add-port", args.bridge_interface, patch2,
+                  "--", "set", "interface", patch2, "type=patch",
+                  "options:peer=" + patch1)
+        ovs_vsctl("--may-exist", "add-port", "br-int", patch1,
+                  "--", "set", "interface", patch1, "type=patch",
+                  "options:peer=" + patch2,
+                  "external-ids:iface-id=" + iface_id)
+
+        br_int_ofport = int(ovs_vsctl("get", "interface", patch2, "ofport"))
+        if br_int_ofport <= 0:
+            raise Exception("patch port creation failed to provide a ofport")
+
+        add_conntrack_rules(args.bridge_interface, physical_interface_ofport,
+                            br_int_ofport)
+    else:
         # Connect physical interface to br-int. Get its mac address
         iface_id = "%s_%s" % (args.physical_interface, system_id)
         ovs_vsctl("--", "--may-exist", "add-port", "br-int",
@@ -327,6 +394,9 @@ def main():
     parser_gateway_init.add_argument('--cluster-ip-subnet', required=True,
                                      help="The cluster wide larger subnet of "
                                      "private ip addresses.")
+    parser_gateway_init.add_argument('--bridge-interface',
+                                     help="The OVS bridge interface via which "
+                                     "external connectivity is provided.")
     parser_gateway_init.add_argument('--physical-interface',
                                      help="The physical interface via which "
                                      "external connectivity is provided.")
